@@ -1,175 +1,232 @@
-# inih (INI Not Invented Here)
+# inih (INI Not Invented Here) - Rust Edition
 
 [![Tests](https://github.com/benhoyt/inih/actions/workflows/tests.yml/badge.svg)](https://github.com/benhoyt/inih/actions/workflows/tests.yml)
 
-**inih (INI Not Invented Here)** is a simple [.INI file](http://en.wikipedia.org/wiki/INI_file) parser written in C. It's only a couple of pages of code, and it was designed to be _small and simple_, so it's good for embedded systems. It's also more or less compatible with Python's [ConfigParser](http://docs.python.org/library/configparser.html) style of .INI files, including RFC 822-style multi-line syntax and `name: value` entries.
+**inih (INI Not Invented Here)** - это простой парсер файлов .INI, написанный на Rust. Это порт популярной C библиотеки inih, разработанный для того, чтобы быть _маленьким и простым_, что делает его подходящим для встраиваемых систем. Он также более или менее совместим со стилем .INI файлов Python [ConfigParser](http://docs.python.org/library/configparser.html), включая синтаксис многострочных записей в стиле RFC 822 и записи `name: value`.
 
-To use it, just give `ini_parse()` an INI file, and it will call a callback for every `name=value` pair parsed, giving you strings for the section, name, and value. It's done this way ("SAX style") because it works well on low-memory embedded systems, but also because it makes for a KISS implementation.
+## Особенности
 
-You can also call `ini_parse_file()` to parse directly from a `FILE*` object, `ini_parse_string()` to parse data from a string, or `ini_parse_stream()` to parse using a custom fgets-style reader function for custom I/O.
+- Парсинг INI файлов с секциями, парами name=value и комментариями
+- Поддержка многострочных записей (как в ConfigParser Python)
+- Поддержка UTF-8 BOM
+- Встроенные и начальные комментарии
+- Настраиваемые опции парсинга
+- Как callback-based, так и reader-based API
+- Эффективное использование памяти (без ненужных выделений)
+- Полная совместимость с оригинальной C библиотекой
 
-Download a release, browse the source, or read about [how to use inih in a DRY style](http://blog.brush.co.nz/2009/08/xmacros/) with X-Macros.
+## Быстрый старт
 
+### Высокоуровневый API
 
-## Compile-time options ##
+```rust
+use inih::IniReader;
 
-You can control various aspects of inih using preprocessor defines:
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let reader = IniReader::from_file("config.ini")?;
+    
+    let version = reader.get_integer("protocol", "version", -1);
+    let name = reader.get_string("user", "name", "UNKNOWN");
+    let email = reader.get_string("user", "email", "UNKNOWN");
+    
+    println!("Config: version={}, name={}, email={}", version, name, email);
+    Ok(())
+}
+```
 
-### Syntax options ###
+### Низкоуровневый API
 
-  * **Multi-line entries:** By default, inih supports multi-line entries in the style of Python's ConfigParser. To disable, add `-DINI_ALLOW_MULTILINE=0`.
-  * **UTF-8 BOM:** By default, inih allows a UTF-8 BOM sequence (0xEF 0xBB 0xBF) at the start of INI files. To disable, add `-DINI_ALLOW_BOM=0`.
-  * **Inline comments:** By default, inih allows inline comments with the `;` character. To disable, add `-DINI_ALLOW_INLINE_COMMENTS=0`. You can also specify which character(s) start an inline comment using `INI_INLINE_COMMENT_PREFIXES`.
-  * **Start-of-line comments:** By default, inih allows both `;` and `#` to start a comment at the beginning of a line. You can override this by changing `INI_START_COMMENT_PREFIXES`.
-  * **Allow no value:** By default, inih treats a name with no value (no `=` or `:` on the line) as an error. To allow names with no values, add `-DINI_ALLOW_NO_VALUE=1`, and inih will call your handler function with value set to NULL.
+```rust
+use inih::{ini_parse_string, IniHandler};
 
-### Parsing options ###
+struct Config {
+    version: i32,
+    name: String,
+}
 
-  * **Stop on first error:** By default, inih keeps parsing the rest of the file after an error. To stop parsing on the first error, add `-DINI_STOP_ON_FIRST_ERROR=1`.
-  * **Report line numbers:** By default, the `ini_handler` callback doesn't receive the line number as a parameter. If you need that, add `-DINI_HANDLER_LINENO=1`.
-  * **Call handler on new section:** By default, inih only calls the handler on each `name=value` pair. To detect new sections (e.g., the INI file has multiple sections with the same name), add `-DINI_CALL_HANDLER_ON_NEW_SECTION=1`. Your handler function will then be called each time a new section is encountered, with `section` set to the new section name but `name` and `value` set to NULL.
-
-### Memory options ###
-
-  * **Stack vs heap:** By default, inih creates a fixed-sized line buffer on the stack. To allocate on the heap using `malloc` instead, specify `-DINI_USE_STACK=0`.
-  * **Maximum line length:** The default maximum line length (for stack or heap) is 200 bytes. To override this, add something like `-DINI_MAX_LINE=1000`. Note that `INI_MAX_LINE` must be 3 more than the longest line (due to `\r`, `\n`, and the NUL).
-  * **Initial malloc size:** `INI_INITIAL_ALLOC` specifies the initial malloc size when using the heap. It defaults to 200 bytes.
-  * **Allow realloc:** By default when using the heap (`-DINI_USE_STACK=0`), inih allocates a fixed-sized buffer of `INI_INITIAL_ALLOC` bytes. To allow this to grow to `INI_MAX_LINE` bytes, doubling if needed, set `-DINI_ALLOW_REALLOC=1`.
-  * **Custom allocator:** By default when using the heap, the standard library's `malloc`, `free`, and `realloc` functions are used; to use a custom allocator, specify `-DINI_CUSTOM_ALLOCATOR=1` (and `-DINI_USE_STACK=0`). You must define and link functions named `ini_malloc`, `ini_free`, and (if `INI_ALLOW_REALLOC` is set) `ini_realloc`, which must have the same signatures as the `stdlib.h` memory allocation functions.
-
-## Simple example in C ##
-
-```c
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include "../ini.h"
-
-typedef struct
-{
-    int version;
-    const char* name;
-    const char* email;
-} configuration;
-
-static int handler(void* user, const char* section, const char* name,
-                   const char* value)
-{
-    configuration* pconfig = (configuration*)user;
-
-    #define MATCH(s, n) strcmp(section, s) == 0 && strcmp(name, n) == 0
-    if (MATCH("protocol", "version")) {
-        pconfig->version = atoi(value);
-    } else if (MATCH("user", "name")) {
-        pconfig->name = strdup(value);
-    } else if (MATCH("user", "email")) {
-        pconfig->email = strdup(value);
-    } else {
-        return 0;  /* unknown section/name, error */
+impl IniHandler for Config {
+    fn handle(&mut self, section: &str, name: &str, value: &str) -> Result<(), String> {
+        match (section, name) {
+            ("protocol", "version") => {
+                self.version = value.parse().map_err(|_| "Invalid version".to_string())?;
+            }
+            ("user", "name") => {
+                self.name = value.to_string();
+            }
+            _ => return Err(format!("Unknown key: {}.{}", section, name)),
+        }
+        Ok(())
     }
-    return 1;
 }
 
-int main(int argc, char* argv[])
-{
-    configuration config;
-
-    if (ini_parse("test.ini", handler, &config) < 0) {
-        printf("Can't load 'test.ini'\n");
-        return 1;
-    }
-    printf("Config loaded from 'test.ini': version=%d, name=%s, email=%s\n",
-        config.version, config.name, config.email);
-    return 0;
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut config = Config { version: 0, name: String::new() };
+    ini_parse_string("[protocol]\nversion=6\n[user]\nname=Bob", &mut config)?;
+    println!("Version: {}, Name: {}", config.version, config.name);
+    Ok(())
 }
 ```
 
+## Установка
 
-## C++ example ##
+Добавьте в ваш `Cargo.toml`:
 
-If you're into C++ and the STL, there is also an easy-to-use [INIReader class](https://github.com/benhoyt/inih/blob/master/cpp/INIReader.h) that stores values in a `map` and lets you `Get()` them:
+```toml
+[dependencies]
+inih = "0.1.0"
+```
 
-```cpp
-#include <iostream>
-#include "INIReader.h"
+## Использование
 
-int main()
-{
-    INIReader reader("../examples/test.ini");
+### Чтение из файла
 
-    if (reader.ParseError() < 0) {
-        std::cout << "Can't load 'test.ini'\n";
-        return 1;
-    }
-    std::cout << "Config loaded from 'test.ini': version="
-              << reader.GetInteger("protocol", "version", -1) << ", name="
-              << reader.Get("user", "name", "UNKNOWN") << ", email="
-              << reader.Get("user", "email", "UNKNOWN") << ", pi="
-              << reader.GetReal("user", "pi", -1) << ", active="
-              << reader.GetBoolean("user", "active", true) << "\n";
-    return 0;
+```rust
+use inih::IniReader;
+
+let reader = IniReader::from_file("config.ini")?;
+let value = reader.get_string("section", "key", "default");
+```
+
+### Чтение из строки
+
+```rust
+use inih::IniReader;
+
+let data = r#"
+[section]
+key = value
+"#;
+let reader = IniReader::from_string(data)?;
+let value = reader.get_string("section", "key", "default");
+```
+
+### Чтение из потока
+
+```rust
+use inih::IniReader;
+use std::fs::File;
+
+let file = File::open("config.ini")?;
+let reader = IniReader::from_reader(file)?;
+```
+
+### Типы данных
+
+```rust
+let reader = IniReader::from_string(data)?;
+
+// Строки
+let name = reader.get_string("user", "name", "UNKNOWN");
+let email = reader.get_string("user", "email", "");
+
+// Целые числа
+let port = reader.get_integer("server", "port", 8080);
+let big_number = reader.get_integer64("data", "trillion", 0);
+
+// Беззнаковые целые числа
+let max_connections = reader.get_unsigned("server", "max_connections", 100);
+
+// Числа с плавающей точкой
+let pi = reader.get_real("math", "pi", 3.14159);
+
+// Логические значения
+let debug = reader.get_boolean("server", "debug", false);
+// Поддерживаемые значения: true/false, yes/no, on/off, 1/0
+```
+
+### Работа с секциями
+
+```rust
+let reader = IniReader::from_string(data)?;
+
+// Получить все секции
+let sections = reader.sections();
+for section in sections {
+    println!("Section: {}", section);
+}
+
+// Получить все ключи в секции
+let keys = reader.keys("user");
+for key in keys {
+    println!("Key: {}", key);
+}
+
+// Проверить существование
+if reader.has_section("user") {
+    println!("User section exists");
+}
+
+if reader.has_value("user", "name") {
+    println!("Name key exists in user section");
 }
 ```
 
-This simple C++ API works fine, but it's not very fully-fledged. I'm not planning to work more on the C++ API at the moment, so if you want a bit more power (for example `GetSections()` and `GetFields()` functions), see these forks:
+### Настройка парсинга
 
-  * https://github.com/Blandinium/inih
-  * https://github.com/OSSystems/inih
+```rust
+use inih::{ini_parse_string_with_options, ParseOptions};
 
+let mut options = ParseOptions::default();
+options.allow_multiline = true;
+options.allow_inline_comments = true;
+options.inline_comment_prefixes = ";#".to_string();
+options.start_comment_prefixes = ";#".to_string();
+options.allow_no_value = true;
+options.stop_on_first_error = false;
+options.max_line = 1000;
 
-## Differences from ConfigParser ##
-
-Some differences between inih and Python's [ConfigParser](http://docs.python.org/library/configparser.html) standard library module:
-
-* INI name=value pairs given above any section headers are treated as valid items with no section (section name is an empty string). In ConfigParser having no section is an error.
-* Line continuations are handled with leading whitespace on continued lines (like ConfigParser). However, instead of concatenating continued lines together, they are treated as separate values for the same key (unlike ConfigParser).
-
-
-## Platform-specific notes ##
-
-* Windows/Win32 uses UTF-16 filenames natively, so to handle Unicode paths you need to call `_wfopen()` to open a file and then `ini_parse_file()` to parse it; inih does not include `wchar_t` or Unicode handling.
-
-## Meson notes ##
-
-* The `meson.build` file is not required to use or compile inih, its main purpose is for distributions.
-* By default Meson is set up for distro installation, but this behavior can be configured for embedded use cases:
-  * with `-Ddefault_library=static` static libraries are built.
-  * with `-Ddistro_install=false` libraries, headers and pkg-config files won't be installed.
-  * with `-Dwith_INIReader=false` you can disable building the C++ library.
-* All compile-time options are implemented in Meson as well, you can take a look at [meson_options.txt](https://github.com/benhoyt/inih/blob/master/meson_options.txt) for their definition. These won't work if `distro_install` is set to `true`.
-* If you want to use inih for programs which may be shipped in a distro, consider linking against the shared libraries. The pkg-config entries are `inih` and `INIReader`.
-* In case you use inih as a Meson subproject, you can use the `inih_dep` and `INIReader_dep` dependency variables. You might want to set `default_library=static` and `distro_install=false` for the subproject. An official Wrap is provided on [WrapDB](https://wrapdb.mesonbuild.com/inih).
-* For packagers: if you want to tag the version in the pkg-config file, you will need to do this downstream. Add `version : '<version_as_int>',` after the `license` tag in the `project()` function and `version : meson.project_version(),` after the `soversion` tag in both `library()` functions.
-
-## Using inih with tipi.build
-
-`inih` can be easily used in [tipi.build](https://tipi.build) projects simply by adding the following entry to your `.tipi/deps` (replace `r56` with the latest version tag):
-
-```json
-{
-    "benhoyt/inih": { "@": "r56" }
-}
+let mut handler = MyHandler::new();
+ini_parse_string_with_options(data, &mut handler, &options)?;
 ```
 
-The required include path in your project is:
+## Опции компиляции
 
-```c
-#include <ini.h>
+Вы можете контролировать различные аспекты inih с помощью опций в `ParseOptions`:
+
+### Опции синтаксиса
+
+- **Многострочные записи:** По умолчанию inih поддерживает многострочные записи в стиле ConfigParser Python. Установите `allow_multiline = false` для отключения.
+- **UTF-8 BOM:** По умолчанию inih позволяет последовательность UTF-8 BOM (0xEF 0xBB 0xBF) в начале INI файлов. Установите `allow_bom = false` для отключения.
+- **Встроенные комментарии:** По умолчанию inih позволяет встроенные комментарии с символом `;`. Установите `allow_inline_comments = false` для отключения.
+- **Комментарии в начале строки:** По умолчанию inih позволяет как `;`, так и `#` для начала комментария в начале строки. Настройте `start_comment_prefixes`.
+- **Разрешить отсутствие значения:** По умолчанию inih обрабатывает имя без значения (без `=` или `:` в строке) как ошибку. Установите `allow_no_value = true` для разрешения.
+
+### Опции парсинга
+
+- **Остановка на первой ошибке:** По умолчанию inih продолжает парсинг остальной части файла после ошибки. Установите `stop_on_first_error = true` для остановки на первой ошибке.
+- **Вызов обработчика на новой секции:** По умолчанию inih вызывает обработчик только для каждой пары `name=value`. Установите `call_handler_on_new_section = true` для вызова при обнаружении новой секции.
+
+### Опции памяти
+
+- **Максимальная длина строки:** По умолчанию максимальная длина строки составляет 200 байт. Настройте `max_line` для изменения.
+
+## Примеры
+
+Смотрите папку `examples/` для дополнительных примеров:
+
+- `basic_example.rs` - Базовое использование высокоуровневого API
+- `callback_example.rs` - Использование низкоуровневого callback API
+- `file_example.rs` - Чтение из файла
+- `advanced_example.rs` - Продвинутые возможности и настройки
+
+## Тестирование
+
+```bash
+cargo test
 ```
 
-## Building from vcpkg ##
+## Лицензия
 
-You can build and install inih using [vcpkg](https://github.com/microsoft/vcpkg/) dependency manager:
+BSD-3-Clause (см. файл LICENSE.txt)
 
-    git clone https://github.com/Microsoft/vcpkg.git
-    cd vcpkg
-    ./bootstrap-vcpkg.sh
-    ./vcpkg integrate install
-    ./vcpkg install inih
+## Связанные ссылки
 
-The inih port in vcpkg is kept up to date by microsoft team members and community contributors.
-If the version is out of date, please [create an issue or pull request](https://github.com/Microsoft/vcpkg) on the vcpkg repository.
+- [Оригинальная C библиотека inih](https://github.com/benhoyt/inih)
+- [Conan пакет для inih](https://github.com/conan-io/conan-center-index/tree/master/recipes/inih) (Conan - это менеджер пакетов C/C++)
 
-## Related links ##
+## Различия с ConfigParser
 
-* [Conan package for inih](https://github.com/conan-io/conan-center-index/tree/master/recipes/inih) (Conan is a C/C++ package manager)
+Некоторые различия между inih и модулем [ConfigParser](http://docs.python.org/library/configparser.html) стандартной библиотеки Python:
+
+* Пары INI name=value, указанные выше любых заголовков секций, обрабатываются как действительные элементы без секции (имя секции - пустая строка). В ConfigParser отсутствие секции является ошибкой.
+* Продолжения строк обрабатываются с ведущими пробелами на продолженных строках (как в ConfigParser). Однако вместо объединения продолженных строк вместе, они обрабатываются как отдельные значения для того же ключа (в отличие от ConfigParser).

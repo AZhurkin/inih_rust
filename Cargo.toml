@@ -1,0 +1,14 @@
+[package]
+name = "inih"
+version = "0.1.0"
+edition = "2021"
+authors = ["Ben Hoyt <benhoyt@gmail.com>"]
+description = "Simple .INI file parser written in Rust"
+license = "BSD-3-Clause"
+repository = "https://github.com/benhoyt/inih"
+keywords = ["ini", "config", "parser", "configuration"]
+categories = ["config", "parsing"]
+
+[dependencies]
+
+[dev-dependencies]
